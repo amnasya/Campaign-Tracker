@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums
+enum UserRole {
+  brand
+  influencer
+}
+
+enum CampaignStatus {
+  draft
+  active
+  completed
+}
+
+enum CampaignInfluencerStatus {
+  invited
+  accepted
+  submitted
+  verified
+}
+
+enum PaymentStatus {
+  pending
+  paid
+}
+
+// Models
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      UserRole
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  campaigns            Campaign[]            @relation("BrandCampaigns")
+  campaignInfluencers  CampaignInfluencer[]  @relation("InfluencerAssignments")
+
+  @@index([email])
+  @@index([role])
+}
+
+model Campaign {
+  id        String         @id @default(uuid())
+  brandId   String
+  title     String
+  brief     String         @db.Text
+  budget    Float
+  deadline  DateTime
+  status    CampaignStatus @default(draft)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  // Relations
+  brand               User                   @relation("BrandCampaigns", fields: [brandId], references: [id], onDelete: Cascade)
+  campaignInfluencers CampaignInfluencer[]
+
+  @@index([brandId])
+  @@index([status])
+  @@index([deadline])
+}
+
+model CampaignInfluencer {
+  id            String                     @id @default(uuid())
+  campaignId    String
+  influencerId  String
+  status        CampaignInfluencerStatus   @default(invited)
+  postUrl       String?
+  screenshotUrl String?
+  likes         Int?
+  comments      Int?
+  submittedAt   DateTime?
+  createdAt     DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
+
+  // Relations
+  campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  influencer  User      @relation("InfluencerAssignments", fields: [influencerId], references: [id], onDelete: Cascade)
+  payment     Payment?
+
+  @@unique([campaignId, influencerId])
+  @@index([campaignId])
+  @@index([influencerId])
+  @@index([status])
+}
+
+model Payment {
+  id                    String        @id @default(uuid())
+  campaignInfluencerId  String        @unique
+  amount                Float
+  status                PaymentStatus @default(pending)
+  paidAt                DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  // Relations
+  campaignInfluencer CampaignInfluencer @relation(fields: [campaignInfluencerId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}

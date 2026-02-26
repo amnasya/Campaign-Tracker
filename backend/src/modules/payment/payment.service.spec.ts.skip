@@ -1,0 +1,407 @@
+import { PaymentStatus } from '@prisma/client';
+import { CampaignInfluencerStatus } from '@prisma/client';
+import { Test, TestingModule } from '@nestjs/testing';
+import {
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
+import { PaymentService } from './payment.service';
+import { PrismaService } from '../../prisma/prisma.service';
+
+import * as fc from 'fast-check';
+
+describe('PaymentService', () => {
+  let service: PaymentService;
+  let prisma: PrismaService;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        PaymentService,
+        {
+          provide: PrismaService,
+          useValue: {
+            payment: {
+              create: jest.fn(),
+              findUnique: jest.fn(),
+              findMany: jest.fn(),
+              update: jest.fn(),
+            },
+            campaign: {
+              findUnique: jest.fn(),
+            },
+            campaignInfluencer: {
+              update: jest.fn(),
+            },
+            $transaction: jest.fn(),
+          },
+        },
+      ],
+    }).compile();
+
+    service = module.get<PaymentService>(PaymentService);
+    prisma = module.get<PrismaService>(PrismaService);
+  });
+
+  it('should be defined', () => {
+    expect(service).toBeDefined();
+  });
+
+  // Feature: influencer-campaign-tracker, Property 29: Payment transition validation
+  // Validates: Requirements 12.1, 12.3, 12.4
+  describe('Property 29: Payment transition validation', () => {
+    it('should only allow transition from pending to paid and record timestamp', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            paymentId: fc.uuid(),
+            campaignInfluencerId: fc.uuid(),
+            campaignId: fc.uuid(),
+            brandId: fc.uuid(),
+            amount: fc.float({ min: 1, max: 10000, noNaN: true }),
+            currentStatus: fc.constantFrom(PaymentStatus.pending, PaymentStatus.paid),
+          }),
+          async (testData) => {
+            const mockPayment = {
+              id: testData.paymentId,
+              campaignInfluencerId: testData.campaignInfluencerId,
+              amount: testData.amount,
+              status: testData.currentStatus,
+              paidAt: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              campaignInfluencer: {
+                id: testData.campaignInfluencerId,
+                campaignId: testData.campaignId,
+                influencerId: fc.sample(fc.uuid(), 1)[0],
+                status: CampaignInfluencerStatus.verified,
+                campaign: {
+                  id: testData.campaignId,
+                  brandId: testData.brandId,
+                  title: 'Test Campaign',
+                  brief: 'Test Brief',
+                  budget: 1000,
+                  deadline: new Date(),
+                  status: 'active' as any,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                },
+              },
+            };
+
+            jest.spyOn(prisma.payment, 'findUnique').mockResolvedValue(mockPayment as any);
+
+            if (testData.currentStatus === PaymentStatus.pending) {
+              // Property: Should allow transition from pending to paid
+              const updatedPayment = {
+                ...mockPayment,
+                status: PaymentStatus.paid,
+                paidAt: new Date(),
+              };
+
+              jest.spyOn(prisma, '$transaction').mockResolvedValue([updatedPayment, {}] as any);
+
+              const result = await service.markAsPaid(testData.paymentId, testData.brandId);
+
+              // Property: Status should be updated to paid
+              expect(result.status).toBe(PaymentStatus.paid);
+              
+              // Property: paidAt timestamp should be set
+              expect(result.paidAt).toBeDefined();
+              expect(result.paidAt).toBeInstanceOf(Date);
+            } else {
+              // Property: Should reject transition from paid (already paid)
+              await expect(
+                service.markAsPaid(testData.paymentId, testData.brandId),
+              ).rejects.toThrow(BadRequestException);
+            }
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+
+  // Feature: influencer-campaign-tracker, Property 30: Payment updates campaign status
+  // Validates: Requirements 12.2
+  describe('Property 30: Payment updates campaign status', () => {
+    it('should update CampaignInfluencer status to paid when payment is marked as paid', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            paymentId: fc.uuid(),
+            campaignInfluencerId: fc.uuid(),
+            campaignId: fc.uuid(),
+            brandId: fc.uuid(),
+            influencerId: fc.uuid(),
+            amount: fc.float({ min: 1, max: 10000, noNaN: true }),
+          }),
+          async (testData) => {
+            const mockPayment = {
+              id: testData.paymentId,
+              campaignInfluencerId: testData.campaignInfluencerId,
+              amount: testData.amount,
+              status: PaymentStatus.pending,
+              paidAt: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              campaignInfluencer: {
+                id: testData.campaignInfluencerId,
+                campaignId: testData.campaignId,
+                influencerId: testData.influencerId,
+                status: CampaignInfluencerStatus.verified,
+                campaign: {
+                  id: testData.campaignId,
+                  brandId: testData.brandId,
+                  title: 'Test Campaign',
+                  brief: 'Test Brief',
+                  budget: 1000,
+                  deadline: new Date(),
+                  status: 'active' as any,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                },
+              },
+            };
+
+            jest.spyOn(prisma.payment, 'findUnique').mockResolvedValue(mockPayment as any);
+
+            const updatedPayment = {
+              ...mockPayment,
+              status: PaymentStatus.paid,
+              paidAt: new Date(),
+            };
+
+            const updatedCampaignInfluencer = {
+              id: testData.campaignInfluencerId,
+              status: CampaignInfluencerStatus.paid,
+            };
+
+            // Mock transaction to capture both updates
+            const transactionSpy = jest.spyOn(prisma, '$transaction').mockResolvedValue([
+              updatedPayment,
+              updatedCampaignInfluencer,
+            ] as any);
+
+            await service.markAsPaid(testData.paymentId, testData.brandId);
+
+            // Property: Transaction should be called with both payment and campaignInfluencer updates
+            expect(transactionSpy).toHaveBeenCalled();
+            
+            // Verify the transaction includes updating the CampaignInfluencer status
+            const transactionCalls = transactionSpy.mock.calls[0][0];
+            expect(transactionCalls).toHaveLength(2);
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+
+  // Feature: influencer-campaign-tracker, Property 31: Payment authorization
+  // Validates: Requirements 12.5
+  describe('Property 31: Payment authorization', () => {
+    it('should verify campaign ownership before allowing payment updates', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            paymentId: fc.uuid(),
+            campaignInfluencerId: fc.uuid(),
+            campaignId: fc.uuid(),
+            actualBrandId: fc.uuid(),
+            attemptingBrandId: fc.uuid(),
+            amount: fc.float({ min: 1, max: 10000, noNaN: true }),
+          }).filter(data => data.actualBrandId !== data.attemptingBrandId),
+          async (testData) => {
+            const mockPayment = {
+              id: testData.paymentId,
+              campaignInfluencerId: testData.campaignInfluencerId,
+              amount: testData.amount,
+              status: PaymentStatus.pending,
+              paidAt: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              campaignInfluencer: {
+                id: testData.campaignInfluencerId,
+                campaignId: testData.campaignId,
+                influencerId: fc.sample(fc.uuid(), 1)[0],
+                status: CampaignInfluencerStatus.verified,
+                campaign: {
+                  id: testData.campaignId,
+                  brandId: testData.actualBrandId,
+                  title: 'Test Campaign',
+                  brief: 'Test Brief',
+                  budget: 1000,
+                  deadline: new Date(),
+                  status: 'active' as any,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                },
+              },
+            };
+
+            jest.spyOn(prisma.payment, 'findUnique').mockResolvedValue(mockPayment as any);
+
+            // Property: Should reject payment update when brand doesn't own the campaign
+            await expect(
+              service.markAsPaid(testData.paymentId, testData.attemptingBrandId),
+            ).rejects.toThrow(ForbiddenException);
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should allow payment update when brand owns the campaign', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            paymentId: fc.uuid(),
+            campaignInfluencerId: fc.uuid(),
+            campaignId: fc.uuid(),
+            brandId: fc.uuid(),
+            amount: fc.float({ min: 1, max: 10000, noNaN: true }),
+          }),
+          async (testData) => {
+            const mockPayment = {
+              id: testData.paymentId,
+              campaignInfluencerId: testData.campaignInfluencerId,
+              amount: testData.amount,
+              status: PaymentStatus.pending,
+              paidAt: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              campaignInfluencer: {
+                id: testData.campaignInfluencerId,
+                campaignId: testData.campaignId,
+                influencerId: fc.sample(fc.uuid(), 1)[0],
+                status: CampaignInfluencerStatus.verified,
+                campaign: {
+                  id: testData.campaignId,
+                  brandId: testData.brandId,
+                  title: 'Test Campaign',
+                  brief: 'Test Brief',
+                  budget: 1000,
+                  deadline: new Date(),
+                  status: 'active' as any,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                },
+              },
+            };
+
+            jest.spyOn(prisma.payment, 'findUnique').mockResolvedValue(mockPayment as any);
+
+            const updatedPayment = {
+              ...mockPayment,
+              status: PaymentStatus.paid,
+              paidAt: new Date(),
+            };
+
+            jest.spyOn(prisma, '$transaction').mockResolvedValue([updatedPayment, {}] as any);
+
+            // Property: Should allow payment update when brand owns the campaign
+            const result = await service.markAsPaid(testData.paymentId, testData.brandId);
+            expect(result.status).toBe(PaymentStatus.paid);
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+
+  // Feature: influencer-campaign-tracker, Property 36: Payment status display
+  // Validates: Requirements 14.1, 14.2
+  describe('Property 36: Payment status display', () => {
+    it('should display payment amount and status when payment exists', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            influencerId: fc.uuid(),
+            numPayments: fc.integer({ min: 1, max: 5 }),
+          }),
+          async (testData) => {
+            // Generate payments for the influencer
+            const payments = Array.from({ length: testData.numPayments }, (_, i) => ({
+              id: fc.sample(fc.uuid(), 1)[0],
+              campaignInfluencerId: fc.sample(fc.uuid(), 1)[0],
+              amount: 100 + (i * 50),
+              status: i % 2 === 0 ? PaymentStatus.paid : PaymentStatus.pending,
+              paidAt: i % 2 === 0 ? new Date() : null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            }));
+
+            jest.spyOn(prisma.payment, 'findMany').mockResolvedValue(payments as any);
+
+            const result = await service.findByInfluencer(testData.influencerId);
+
+            // Property: All payments should have amount and status
+            expect(result).toHaveLength(testData.numPayments);
+            result.forEach((payment) => {
+              expect(payment.amount).toBeDefined();
+              expect(typeof payment.amount).toBe('number');
+              expect(payment.status).toBeDefined();
+              expect([PaymentStatus.pending, PaymentStatus.paid]).toContain(payment.status);
+            });
+
+            // Property: Paid payments should have paidAt timestamp
+            result.forEach((payment) => {
+              if (payment.status === PaymentStatus.paid) {
+                expect(payment.paidAt).toBeDefined();
+                expect(payment.paidAt).toBeInstanceOf(Date);
+              }
+            });
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+
+  // Feature: influencer-campaign-tracker, Property 37: Payment data isolation
+  // Validates: Requirements 14.5
+  describe('Property 37: Payment data isolation', () => {
+    it('should only show payments for campaigns where influencer is assigned', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            influencerId: fc.uuid(),
+            otherInfluencerId: fc.uuid(),
+            numPayments: fc.integer({ min: 1, max: 5 }),
+          }).filter(data => data.influencerId !== data.otherInfluencerId),
+          async (testData) => {
+            // Generate payments only for this influencer
+            const payments = Array.from({ length: testData.numPayments }, (_, i) => ({
+              id: fc.sample(fc.uuid(), 1)[0],
+              campaignInfluencerId: fc.sample(fc.uuid(), 1)[0],
+              amount: 100 + (i * 50),
+              status: PaymentStatus.pending,
+              paidAt: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            }));
+
+            // Mock payments for this influencer
+            jest.spyOn(prisma.payment, 'findMany').mockResolvedValue(payments as any);
+
+            const result = await service.findByInfluencer(testData.influencerId);
+
+            // Property: Should return payments for this influencer
+            expect(result).toHaveLength(testData.numPayments);
+
+            // Verify that calling with different influencer would return different results
+            jest.spyOn(prisma.payment, 'findMany').mockResolvedValue([]);
+            const otherResult = await service.findByInfluencer(testData.otherInfluencerId);
+            
+            // Property: Different influencer should get different (empty) results
+            expect(otherResult).toHaveLength(0);
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+});
+

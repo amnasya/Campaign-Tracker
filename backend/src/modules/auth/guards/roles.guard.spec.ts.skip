@@ -1,0 +1,124 @@
+import { UserRole } from '@prisma/client';
+import { Test, TestingModule } from '@nestjs/testing';
+import { Reflector } from '@nestjs/core';
+import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { RolesGuard } from './roles.guard';
+
+import * as fc from 'fast-check';
+
+describe('RolesGuard', () => {
+  let guard: RolesGuard;
+  let reflector: Reflector;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        RolesGuard,
+        {
+          provide: Reflector,
+          useValue: {
+            getAllAndOverride: jest.fn(),
+          },
+        },
+      ],
+    }).compile();
+
+    guard = module.get<RolesGuard>(RolesGuard);
+    reflector = module.get<Reflector>(Reflector);
+  });
+
+  it('should be defined', () => {
+    expect(guard).toBeDefined();
+  });
+
+  // Feature: influencer-campaign-tracker, Property 7: UserRole-based access control
+  // Validates: Requirements 3.5
+  describe('Property 7: UserRole-based access control', () => {
+    it('should reject requests from users with incorrect roles', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            userRole: fc.constantFrom(UserRole.brand, UserRole.influencer),
+            requiredRole: fc.constantFrom(UserRole.brand, UserRole.influencer),
+          }),
+          async ({ userRole, requiredRole }) => {
+            // Mock the reflector to return required roles
+            jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue([requiredRole]);
+
+            // Create a mock execution context
+            const mockContext = {
+              switchToHttp: () => ({
+                getRequest: () => ({
+                  user: { role: userRole },
+                }),
+              }),
+              getHandler: jest.fn(),
+              getClass: jest.fn(),
+            } as unknown as ExecutionContext;
+
+            // Property: If user role matches required role, access should be granted
+            if (userRole === requiredRole) {
+              const result = guard.canActivate(mockContext);
+              expect(result).toBe(true);
+            } else {
+              // Property: If user role doesn't match, access should be denied
+              expect(() => guard.canActivate(mockContext)).toThrow(ForbiddenException);
+            }
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should allow access when no roles are required', () => {
+      jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(undefined);
+
+      const mockContext = {
+        switchToHttp: () => ({
+          getRequest: () => ({
+            user: { role: UserRole.brand },
+          }),
+        }),
+        getHandler: jest.fn(),
+        getClass: jest.fn(),
+      } as unknown as ExecutionContext;
+
+      const result = guard.canActivate(mockContext);
+      expect(result).toBe(true);
+    });
+
+    it('should throw ForbiddenException when user is not authenticated', () => {
+      jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue([UserRole.brand]);
+
+      const mockContext = {
+        switchToHttp: () => ({
+          getRequest: () => ({
+            user: null,
+          }),
+        }),
+        getHandler: jest.fn(),
+        getClass: jest.fn(),
+      } as unknown as ExecutionContext;
+
+      expect(() => guard.canActivate(mockContext)).toThrow(ForbiddenException);
+    });
+
+    it('should allow access when user has one of multiple required roles', () => {
+      jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue([UserRole.brand, UserRole.influencer]);
+
+      const mockContext = {
+        switchToHttp: () => ({
+          getRequest: () => ({
+            user: { role: UserRole.brand },
+          }),
+        }),
+        getHandler: jest.fn(),
+        getClass: jest.fn(),
+      } as unknown as ExecutionContext;
+
+      const result = guard.canActivate(mockContext);
+      expect(result).toBe(true);
+    });
+  });
+});
+

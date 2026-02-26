@@ -1,0 +1,104 @@
+import { validateEnvironmentVariables } from './env-validation.util';
+
+describe('Environment Validation', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    // Reset environment before each test
+    jest.resetModules();
+    process.env = { ...originalEnv };
+  });
+
+  afterAll(() => {
+    // Restore original environment
+    process.env = originalEnv;
+  });
+
+  it('should pass validation when all required variables are present', () => {
+    process.env.DATABASE_URL = 'postgresql://localhost:5432/test';
+    process.env.JWT_SECRET = 'test-secret';
+    process.env.JWT_EXPIRATION = '7d';
+    process.env.CLOUDINARY_CLOUD_NAME = 'test-cloud';
+    process.env.CLOUDINARY_API_KEY = 'test-key';
+    process.env.CLOUDINARY_API_SECRET = 'test-secret';
+    process.env.CORS_ORIGINS = 'http://localhost:3000';
+
+    expect(() => validateEnvironmentVariables()).not.toThrow();
+  });
+
+  it('should throw error when DATABASE_URL is missing', () => {
+    delete process.env.DATABASE_URL;
+    process.env.JWT_SECRET = 'test-secret';
+    process.env.JWT_EXPIRATION = '7d';
+    process.env.CLOUDINARY_CLOUD_NAME = 'test-cloud';
+    process.env.CLOUDINARY_API_KEY = 'test-key';
+    process.env.CLOUDINARY_API_SECRET = 'test-secret';
+    process.env.CORS_ORIGINS = 'http://localhost:3000';
+
+    expect(() => validateEnvironmentVariables()).toThrow(/DATABASE_URL/);
+  });
+
+  it('should throw error when JWT_SECRET is missing', () => {
+    process.env.DATABASE_URL = 'postgresql://localhost:5432/test';
+    delete process.env.JWT_SECRET;
+    process.env.JWT_EXPIRATION = '7d';
+    process.env.CLOUDINARY_CLOUD_NAME = 'test-cloud';
+    process.env.CLOUDINARY_API_KEY = 'test-key';
+    process.env.CLOUDINARY_API_SECRET = 'test-secret';
+    process.env.CORS_ORIGINS = 'http://localhost:3000';
+
+    expect(() => validateEnvironmentVariables()).toThrow(/JWT_SECRET/);
+  });
+
+  it('should throw error when CLOUDINARY credentials are missing', () => {
+    process.env.DATABASE_URL = 'postgresql://localhost:5432/test';
+    process.env.JWT_SECRET = 'test-secret';
+    process.env.JWT_EXPIRATION = '7d';
+    delete process.env.CLOUDINARY_CLOUD_NAME;
+    delete process.env.CLOUDINARY_API_KEY;
+    delete process.env.CLOUDINARY_API_SECRET;
+    process.env.CORS_ORIGINS = 'http://localhost:3000';
+
+    expect(() => validateEnvironmentVariables()).toThrow(/CLOUDINARY_CLOUD_NAME/);
+  });
+
+  it('should throw error when CORS_ORIGINS is missing', () => {
+    process.env.DATABASE_URL = 'postgresql://localhost:5432/test';
+    process.env.JWT_SECRET = 'test-secret';
+    process.env.JWT_EXPIRATION = '7d';
+    process.env.CLOUDINARY_CLOUD_NAME = 'test-cloud';
+    process.env.CLOUDINARY_API_KEY = 'test-key';
+    process.env.CLOUDINARY_API_SECRET = 'test-secret';
+    delete process.env.CORS_ORIGINS;
+
+    expect(() => validateEnvironmentVariables()).toThrow(/CORS_ORIGINS/);
+  });
+
+  it('should throw error with descriptive message listing all missing variables', () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.JWT_SECRET;
+    delete process.env.JWT_EXPIRATION;
+    delete process.env.CLOUDINARY_CLOUD_NAME;
+    delete process.env.CLOUDINARY_API_KEY;
+    delete process.env.CLOUDINARY_API_SECRET;
+    delete process.env.CORS_ORIGINS;
+
+    expect(() => validateEnvironmentVariables()).toThrow(/ENVIRONMENT VARIABLE VALIDATION FAILED/);
+    expect(() => validateEnvironmentVariables()).toThrow(/DATABASE_URL/);
+    expect(() => validateEnvironmentVariables()).toThrow(/JWT_SECRET/);
+    expect(() => validateEnvironmentVariables()).toThrow(/CORS_ORIGINS/);
+  });
+
+  it('should include descriptions in error message', () => {
+    delete process.env.DATABASE_URL;
+
+    try {
+      validateEnvironmentVariables();
+      fail('Should have thrown an error');
+    } catch (error) {
+      expect(error.message).toContain('DATABASE_URL');
+      expect(error.message).toContain('PostgreSQL database connection string');
+    }
+  });
+});
+

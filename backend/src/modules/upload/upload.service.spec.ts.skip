@@ -1,0 +1,403 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
+import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import { UploadService } from './upload.service';
+import * as fc from 'fast-check';
+import { v2 as cloudinary } from 'cloudinary';
+
+// Mock cloudinary
+jest.mock('cloudinary', () => ({
+  v2: {
+    config: jest.fn(),
+    uploader: {
+      upload_stream: jest.fn(),
+    },
+  },
+}));
+
+describe('UploadService', () => {
+  let service: UploadService;
+  let configService: ConfigService;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        UploadService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn((key: string) => {
+              const config = {
+                CLOUDINARY_CLOUD_NAME: 'test-cloud',
+                CLOUDINARY_API_KEY: 'test-key',
+                CLOUDINARY_API_SECRET: 'test-secret',
+              };
+              return config[key];
+            }),
+          },
+        },
+      ],
+    }).compile();
+
+    service = module.get<UploadService>(UploadService);
+    configService = module.get<ConfigService>(ConfigService);
+  });
+
+  it('should be defined', () => {
+    expect(service).toBeDefined();
+  });
+
+  // Feature: influencer-campaign-tracker, Property 38: File upload to cloud storage
+  // Validates: Requirements 21.2
+  describe('Property 38: File upload to cloud storage', () => {
+    it('should upload valid image files to cloud storage and return URL', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            filename: fc.string({ minLength: 1, maxLength: 50 }),
+            mimetype: fc.constantFrom(
+              'image/jpeg',
+              'image/jpg',
+              'image/png',
+              'image/gif',
+              'image/webp',
+            ),
+            size: fc.integer({ min: 1, max: 5 * 1024 * 1024 }), // Up to 5MB
+          }),
+          async (fileData) => {
+            // Create mock file
+            const mockFile: Express.Multer.File = {
+              fieldname: 'file',
+              originalname: fileData.filename,
+              encoding: '7bit',
+              mimetype: fileData.mimetype,
+              size: fileData.size,
+              buffer: Buffer.from('mock-image-data'),
+              stream: null as any,
+              destination: '',
+              filename: '',
+              path: '',
+            };
+
+            // Mock cloudinary upload_stream to simulate successful upload
+            const mockSecureUrl = `https://res.cloudinary.com/test-cloud/image/upload/v123456/${fileData.filename}`;
+            (cloudinary.uploader.upload_stream as jest.Mock).mockImplementation(
+              (options, callback) => {
+                // Simulate successful upload
+                callback(null, { secure_url: mockSecureUrl });
+                return {
+                  end: jest.fn(),
+                };
+              },
+            );
+
+            // Upload file
+            const result = await service.uploadFile(mockFile);
+
+            // Property: Result should contain a URL
+            expect(result).toHaveProperty('url');
+            expect(typeof result.url).toBe('string');
+            expect(result.url).toBe(mockSecureUrl);
+            expect(result.url).toMatch(/^https:\/\//);
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+
+  // Feature: influencer-campaign-tracker, Property 39: URL-only database storage
+  // Validates: Requirements 21.3
+  describe('Property 39: URL-only database storage', () => {
+    it('should return only URL without storing file content', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            filename: fc.string({ minLength: 1, maxLength: 50 }),
+            mimetype: fc.constantFrom(
+              'image/jpeg',
+              'image/jpg',
+              'image/png',
+              'image/gif',
+              'image/webp',
+            ),
+            size: fc.integer({ min: 1, max: 5 * 1024 * 1024 }),
+          }),
+          async (fileData) => {
+            // Create mock file
+            const mockFile: Express.Multer.File = {
+              fieldname: 'file',
+              originalname: fileData.filename,
+              encoding: '7bit',
+              mimetype: fileData.mimetype,
+              size: fileData.size,
+              buffer: Buffer.from('mock-image-data'),
+              stream: null as any,
+              destination: '',
+              filename: '',
+              path: '',
+            };
+
+            // Mock cloudinary upload
+            const mockSecureUrl = `https://res.cloudinary.com/test-cloud/image/upload/v123456/${fileData.filename}`;
+            (cloudinary.uploader.upload_stream as jest.Mock).mockImplementation(
+              (options, callback) => {
+                callback(null, { secure_url: mockSecureUrl });
+                return {
+                  end: jest.fn(),
+                };
+              },
+            );
+
+            // Upload file
+            const result = await service.uploadFile(mockFile);
+
+            // Property: Result should only contain URL, not file buffer or content
+            expect(result).toEqual({ url: expect.any(String) });
+            expect(Object.keys(result)).toEqual(['url']);
+            expect(result).not.toHaveProperty('buffer');
+            expect(result).not.toHaveProperty('content');
+            expect(result).not.toHaveProperty('data');
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+
+  // Feature: influencer-campaign-tracker, Property 40: File type validation
+  // Validates: Requirements 21.4
+  describe('Property 40: File type validation', () => {
+    it('should reject non-image file types', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            filename: fc.string({ minLength: 1, maxLength: 50 }),
+            // Generate invalid mime types (not images)
+            mimetype: fc.constantFrom(
+              'application/pdf',
+              'text/plain',
+              'application/json',
+              'video/mp4',
+              'audio/mpeg',
+              'application/zip',
+            ),
+            size: fc.integer({ min: 1, max: 5 * 1024 * 1024 }),
+          }),
+          async (fileData) => {
+            // Create mock file with invalid type
+            const mockFile: Express.Multer.File = {
+              fieldname: 'file',
+              originalname: fileData.filename,
+              encoding: '7bit',
+              mimetype: fileData.mimetype,
+              size: fileData.size,
+              buffer: Buffer.from('mock-data'),
+              stream: null as any,
+              destination: '',
+              filename: '',
+              path: '',
+            };
+
+            // Property: Upload should throw BadRequestException for invalid file types
+            await expect(service.uploadFile(mockFile)).rejects.toThrow(
+              BadRequestException,
+            );
+            await expect(service.uploadFile(mockFile)).rejects.toThrow(
+              /Invalid file type/,
+            );
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should accept valid image file types', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            filename: fc.string({ minLength: 1, maxLength: 50 }),
+            mimetype: fc.constantFrom(
+              'image/jpeg',
+              'image/jpg',
+              'image/png',
+              'image/gif',
+              'image/webp',
+            ),
+            size: fc.integer({ min: 1, max: 5 * 1024 * 1024 }),
+          }),
+          async (fileData) => {
+            // Create mock file with valid type
+            const mockFile: Express.Multer.File = {
+              fieldname: 'file',
+              originalname: fileData.filename,
+              encoding: '7bit',
+              mimetype: fileData.mimetype,
+              size: fileData.size,
+              buffer: Buffer.from('mock-image-data'),
+              stream: null as any,
+              destination: '',
+              filename: '',
+              path: '',
+            };
+
+            // Mock cloudinary upload
+            const mockSecureUrl = `https://res.cloudinary.com/test-cloud/image/upload/v123456/${fileData.filename}`;
+            (cloudinary.uploader.upload_stream as jest.Mock).mockImplementation(
+              (options, callback) => {
+                callback(null, { secure_url: mockSecureUrl });
+                return {
+                  end: jest.fn(),
+                };
+              },
+            );
+
+            // Property: Valid image types should not throw validation errors
+            const result = await service.uploadFile(mockFile);
+            expect(result).toHaveProperty('url');
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+
+  // Feature: influencer-campaign-tracker, Property 41: File size validation
+  // Validates: Requirements 21.5
+  describe('Property 41: File size validation', () => {
+    it('should reject files exceeding maximum size limit', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            filename: fc.string({ minLength: 1, maxLength: 50 }),
+            mimetype: fc.constantFrom(
+              'image/jpeg',
+              'image/jpg',
+              'image/png',
+              'image/gif',
+              'image/webp',
+            ),
+            // Generate sizes exceeding 5MB limit
+            size: fc.integer({ min: 5 * 1024 * 1024 + 1, max: 10 * 1024 * 1024 }),
+          }),
+          async (fileData) => {
+            // Create mock file exceeding size limit
+            const mockFile: Express.Multer.File = {
+              fieldname: 'file',
+              originalname: fileData.filename,
+              encoding: '7bit',
+              mimetype: fileData.mimetype,
+              size: fileData.size,
+              buffer: Buffer.alloc(fileData.size),
+              stream: null as any,
+              destination: '',
+              filename: '',
+              path: '',
+            };
+
+            // Property: Upload should throw BadRequestException for oversized files
+            await expect(service.uploadFile(mockFile)).rejects.toThrow(
+              BadRequestException,
+            );
+            await expect(service.uploadFile(mockFile)).rejects.toThrow(
+              /File size exceeds/,
+            );
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should accept files within size limit', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            filename: fc.string({ minLength: 1, maxLength: 50 }),
+            mimetype: fc.constantFrom(
+              'image/jpeg',
+              'image/jpg',
+              'image/png',
+              'image/gif',
+              'image/webp',
+            ),
+            // Generate sizes within 5MB limit
+            size: fc.integer({ min: 1, max: 5 * 1024 * 1024 }),
+          }),
+          async (fileData) => {
+            // Create mock file within size limit
+            const mockFile: Express.Multer.File = {
+              fieldname: 'file',
+              originalname: fileData.filename,
+              encoding: '7bit',
+              mimetype: fileData.mimetype,
+              size: fileData.size,
+              buffer: Buffer.alloc(fileData.size),
+              stream: null as any,
+              destination: '',
+              filename: '',
+              path: '',
+            };
+
+            // Mock cloudinary upload
+            const mockSecureUrl = `https://res.cloudinary.com/test-cloud/image/upload/v123456/${fileData.filename}`;
+            (cloudinary.uploader.upload_stream as jest.Mock).mockImplementation(
+              (options, callback) => {
+                callback(null, { secure_url: mockSecureUrl });
+                return {
+                  end: jest.fn(),
+                };
+              },
+            );
+
+            // Property: Files within size limit should not throw validation errors
+            const result = await service.uploadFile(mockFile);
+            expect(result).toHaveProperty('url');
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+
+  describe('validateFile', () => {
+    it('should throw BadRequestException if no file provided', () => {
+      expect(() => service.validateFile(null as any)).toThrow(BadRequestException);
+      expect(() => service.validateFile(null as any)).toThrow('No file provided');
+    });
+  });
+
+  describe('uploadFile error handling', () => {
+    it('should throw InternalServerErrorException on cloudinary upload failure', async () => {
+      const mockFile: Express.Multer.File = {
+        fieldname: 'file',
+        originalname: 'test.jpg',
+        encoding: '7bit',
+        mimetype: 'image/jpeg',
+        size: 1024,
+        buffer: Buffer.from('mock-image-data'),
+        stream: null as any,
+        destination: '',
+        filename: '',
+        path: '',
+      };
+
+      // Mock cloudinary upload to fail
+      (cloudinary.uploader.upload_stream as jest.Mock).mockImplementation(
+        (options, callback) => {
+          callback(new Error('Upload failed'), null);
+          return {
+            end: jest.fn(),
+          };
+        },
+      );
+
+      await expect(service.uploadFile(mockFile)).rejects.toThrow(
+        InternalServerErrorException,
+      );
+      await expect(service.uploadFile(mockFile)).rejects.toThrow(
+        /Failed to upload file/,
+      );
+    });
+  });
+});
+

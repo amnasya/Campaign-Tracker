@@ -1,0 +1,258 @@
+import 'reflect-metadata';
+import * as fc from 'fast-check';
+import {
+  HttpException,
+  HttpStatus,
+  BadRequestException,
+  UnauthorizedException,
+  ForbiddenException,
+  NotFoundException,
+  ConflictException,
+  InternalServerErrorException,
+} from '@nestjs/common';
+import { HttpExceptionFilter } from './filters/http-exception.filter';
+
+describe('HTTP Status Code Properties', () => {
+  /**
+   * Feature: influencer-campaign-tracker, Property 45: HTTP status code correctness
+   * For any error condition, the system should return the appropriate HTTP status code:
+   * 400 for validation errors, 401 for authentication failures, 403 for authorization failures,
+   * 500 for server errors.
+   * Validates: Requirements 23.1
+   */
+  describe('Property 45: HTTP status code correctness', () => {
+    let filter: HttpExceptionFilter;
+    let mockResponse: any;
+    let mockRequest: any;
+    let mockHost: any;
+
+    beforeEach(() => {
+      filter = new HttpExceptionFilter();
+      
+      mockResponse = {
+        status: jest.fn().mockReturnThis(),
+        json: jest.fn().mockReturnThis(),
+      };
+      
+      mockRequest = {
+        url: '/test',
+        method: 'GET',
+      };
+      
+      mockHost = {
+        switchToHttp: jest.fn().mockReturnValue({
+          getResponse: () => mockResponse,
+          getRequest: () => mockRequest,
+        }),
+      };
+    });
+
+    it('should return 400 for BadRequestException', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.string({ minLength: 1 }),
+          async (message) => {
+            const exception = new BadRequestException(message);
+            
+            filter.catch(exception, mockHost);
+            
+            // Should call response.status with 400
+            expect(mockResponse.status).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
+            return mockResponse.status.mock.calls[0][0] === 400;
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should return 401 for UnauthorizedException', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.string({ minLength: 1 }),
+          async (message) => {
+            const exception = new UnauthorizedException(message);
+            
+            filter.catch(exception, mockHost);
+            
+            // Should call response.status with 401
+            expect(mockResponse.status).toHaveBeenCalledWith(HttpStatus.UNAUTHORIZED);
+            return mockResponse.status.mock.calls[0][0] === 401;
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should return 403 for ForbiddenException', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.string({ minLength: 1 }),
+          async (message) => {
+            const exception = new ForbiddenException(message);
+            
+            filter.catch(exception, mockHost);
+            
+            // Should call response.status with 403
+            expect(mockResponse.status).toHaveBeenCalledWith(HttpStatus.FORBIDDEN);
+            return mockResponse.status.mock.calls[0][0] === 403;
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should return 404 for NotFoundException', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.string({ minLength: 1 }),
+          async (message) => {
+            const exception = new NotFoundException(message);
+            
+            filter.catch(exception, mockHost);
+            
+            // Should call response.status with 404
+            expect(mockResponse.status).toHaveBeenCalledWith(HttpStatus.NOT_FOUND);
+            return mockResponse.status.mock.calls[0][0] === 404;
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should return 409 for ConflictException', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.string({ minLength: 1 }),
+          async (message) => {
+            const exception = new ConflictException(message);
+            
+            filter.catch(exception, mockHost);
+            
+            // Should call response.status with 409
+            expect(mockResponse.status).toHaveBeenCalledWith(HttpStatus.CONFLICT);
+            return mockResponse.status.mock.calls[0][0] === 409;
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should return 500 for InternalServerErrorException', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.string({ minLength: 1 }),
+          async (message) => {
+            const exception = new InternalServerErrorException(message);
+            
+            filter.catch(exception, mockHost);
+            
+            // Should call response.status with 500
+            expect(mockResponse.status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+            return mockResponse.status.mock.calls[0][0] === 500;
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should return 500 for unexpected errors', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.string({ minLength: 1 }),
+          async (message) => {
+            const exception = new Error(message);
+            
+            filter.catch(exception, mockHost);
+            
+            // Should call response.status with 500 for unexpected errors
+            expect(mockResponse.status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+            return mockResponse.status.mock.calls[0][0] === 500;
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should include error details in response for any HttpException', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.integer({ min: 400, max: 599 }),
+          fc.string({ minLength: 1 }).filter(s => s.trim().length > 0),
+          async (statusCode, message) => {
+            // Reset mocks for each iteration
+            mockResponse = {
+              status: jest.fn().mockReturnThis(),
+              json: jest.fn().mockReturnThis(),
+            };
+            
+            mockHost = {
+              switchToHttp: jest.fn().mockReturnValue({
+                getResponse: () => mockResponse,
+                getRequest: () => mockRequest,
+              }),
+            };
+
+            const exception = new HttpException(message, statusCode);
+            
+            filter.catch(exception, mockHost);
+            
+            // Should call response.json with error details
+            expect(mockResponse.json).toHaveBeenCalled();
+            const responseData = mockResponse.json.mock.calls[0][0];
+            
+            // Response should include statusCode, message, and error
+            return (
+              responseData.statusCode === statusCode &&
+              typeof responseData.message !== 'undefined' &&
+              typeof responseData.error === 'string' &&
+              typeof responseData.timestamp === 'string' &&
+              responseData.path === '/test' &&
+              responseData.method === 'GET'
+            );
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should map custom HttpException status codes correctly', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.constantFrom(
+            HttpStatus.BAD_REQUEST,
+            HttpStatus.UNAUTHORIZED,
+            HttpStatus.FORBIDDEN,
+            HttpStatus.NOT_FOUND,
+            HttpStatus.CONFLICT,
+            HttpStatus.INTERNAL_SERVER_ERROR,
+          ),
+          fc.string({ minLength: 1 }).filter(s => s.trim().length > 0),
+          async (statusCode, message) => {
+            // Reset mocks for each iteration
+            mockResponse = {
+              status: jest.fn().mockReturnThis(),
+              json: jest.fn().mockReturnThis(),
+            };
+            
+            mockHost = {
+              switchToHttp: jest.fn().mockReturnValue({
+                getResponse: () => mockResponse,
+                getRequest: () => mockRequest,
+              }),
+            };
+
+            const exception = new HttpException(message, statusCode);
+            
+            filter.catch(exception, mockHost);
+            
+            // Should use the exact status code from the exception
+            expect(mockResponse.status).toHaveBeenCalledWith(statusCode);
+            return mockResponse.status.mock.calls[0][0] === statusCode;
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+});
+

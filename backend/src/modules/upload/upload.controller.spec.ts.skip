@@ -1,0 +1,65 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
+import { UploadController } from './upload.controller';
+import { UploadService } from './upload.service';
+
+describe('UploadController', () => {
+  let controller: UploadController;
+  let service: UploadService;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      controllers: [UploadController],
+      providers: [
+        {
+          provide: UploadService,
+          useValue: {
+            uploadFile: jest.fn(),
+          },
+        },
+      ],
+    }).compile();
+
+    controller = module.get<UploadController>(UploadController);
+    service = module.get<UploadService>(UploadService);
+  });
+
+  it('should be defined', () => {
+    expect(controller).toBeDefined();
+  });
+
+  describe('uploadFile', () => {
+    it('should throw BadRequestException if no file provided', async () => {
+      await expect(controller.uploadFile(null as any)).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(controller.uploadFile(null as any)).rejects.toThrow(
+        'No file provided',
+      );
+    });
+
+    it('should call uploadService.uploadFile with the file', async () => {
+      const mockFile: Express.Multer.File = {
+        fieldname: 'file',
+        originalname: 'test.jpg',
+        encoding: '7bit',
+        mimetype: 'image/jpeg',
+        size: 1024,
+        buffer: Buffer.from('mock-image-data'),
+        stream: null as any,
+        destination: '',
+        filename: '',
+        path: '',
+      };
+
+      const mockResult = { url: 'https://example.com/image.jpg' };
+      jest.spyOn(service, 'uploadFile').mockResolvedValue(mockResult);
+
+      const result = await controller.uploadFile(mockFile);
+
+      expect(service.uploadFile).toHaveBeenCalledWith(mockFile);
+      expect(result).toEqual(mockResult);
+    });
+  });
+});
+

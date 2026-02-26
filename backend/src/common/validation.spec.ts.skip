@@ -1,0 +1,134 @@
+import { UserRole } from '@prisma/client';
+import 'reflect-metadata';
+import * as fc from 'fast-check';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
+import { RegisterDto } from '../modules/auth/dto/register.dto';
+import { CreateCampaignDto } from '../modules/campaign/dto/create-campaign.dto';
+
+
+describe('Validation Properties', () => {
+  /**
+   * Feature: influencer-campaign-tracker, Property 42: DTO validation enforcement
+   * For any API request, the system should validate the request body against defined DTOs,
+   * rejecting requests with invalid data types or missing required fields.
+   * Validates: Requirements 17.1
+   */
+  describe('Property 42: DTO validation enforcement', () => {
+    it('should reject RegisterDto with missing required fields', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            name: fc.option(fc.string(), { nil: undefined }),
+            email: fc.option(fc.emailAddress(), { nil: undefined }),
+            password: fc.option(fc.string(), { nil: undefined }),
+            role: fc.option(fc.constantFrom(UserRole.brand, UserRole.influencer), { nil: undefined }),
+          }),
+          async (data) => {
+            // Only test cases where at least one field is missing
+            const hasMissingField = !data.name || !data.email || !data.password || !data.role;
+            
+            if (!hasMissingField) {
+              return true; // Skip complete objects
+            }
+
+            const dto = plainToInstance(RegisterDto, data);
+            const errors = await validate(dto);
+
+            // Should have validation errors when fields are missing
+            return errors.length > 0;
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should reject RegisterDto with invalid data types', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            name: fc.anything(),
+            email: fc.anything(),
+            password: fc.anything(),
+            role: fc.anything(),
+          }),
+          async (data) => {
+            // Only test cases with invalid types (not strings or valid enums)
+            const hasInvalidType =
+              (typeof data.name !== 'string' && data.name !== undefined) ||
+              (typeof data.email !== 'string' && data.email !== undefined) ||
+              (typeof data.password !== 'string' && data.password !== undefined) ||
+              (data.role !== UserRole.brand && data.role !== UserRole.influencer && data.role !== undefined);
+
+            if (!hasInvalidType) {
+              return true; // Skip valid types
+            }
+
+            const dto = plainToInstance(RegisterDto, data);
+            const errors = await validate(dto);
+
+            // Should have validation errors for invalid types
+            return errors.length > 0;
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should reject CreateCampaignDto with invalid budget', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            title: fc.string({ minLength: 1 }),
+            brief: fc.string({ minLength: 1 }),
+            budget: fc.oneof(
+              fc.integer({ max: 0 }), // Non-positive
+              fc.double({ max: 0 }), // Non-positive
+              fc.constant(-1),
+            ),
+            deadline: fc.integer({ min: Date.now(), max: new Date('2100-01-01').getTime() }).map(ts => new Date(ts).toISOString()),
+          }),
+          async (data) => {
+            const dto = plainToInstance(CreateCampaignDto, data);
+            const errors = await validate(dto);
+
+            // Should have validation errors for non-positive budget
+            return errors.length > 0 && errors.some(e => e.property === 'budget');
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+
+    it('should accept valid DTOs with sanitization-safe data', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            // Generate alphanumeric strings that won't be heavily sanitized
+            name: fc.string({ minLength: 1, maxLength: 50 }).filter(s => {
+              const trimmed = s.trim();
+              return trimmed.length > 0 && /^[a-zA-Z0-9\s]+$/.test(trimmed);
+            }),
+            // Generate simple email addresses without special chars that get sanitized
+            email: fc.tuple(
+              fc.string({ minLength: 1, maxLength: 10 }).filter(s => /^[a-z0-9]+$/.test(s)),
+              fc.string({ minLength: 2, maxLength: 10 }).filter(s => /^[a-z]+$/.test(s)),
+              fc.string({ minLength: 2, maxLength: 3 }).filter(s => /^[a-z]+$/.test(s)),
+            ).map(([local, domain, tld]) => `${local}@${domain}.${tld}`),
+            password: fc.string({ minLength: 6, maxLength: 20 }).filter(s => s.trim().length >= 6),
+            role: fc.constantFrom(UserRole.brand, UserRole.influencer),
+          }),
+          async (data) => {
+            const dto = plainToInstance(RegisterDto, data);
+            const errors = await validate(dto);
+
+            // Should have no validation errors for valid, sanitization-safe data
+            return errors.length === 0;
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+});
+

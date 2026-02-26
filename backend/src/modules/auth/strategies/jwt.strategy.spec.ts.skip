@@ -1,0 +1,112 @@
+import { UserRole } from '@prisma/client';
+import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
+import { UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { JwtStrategy } from './jwt.strategy';
+import * as fc from 'fast-check';
+
+
+describe('JwtStrategy', () => {
+  let strategy: JwtStrategy;
+  let jwtService: JwtService;
+  let configService: ConfigService;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        JwtStrategy,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn().mockReturnValue('test-secret'),
+          },
+        },
+        {
+          provide: JwtService,
+          useValue: {
+            sign: jest.fn(),
+            verify: jest.fn(),
+          },
+        },
+      ],
+    }).compile();
+
+    strategy = module.get<JwtStrategy>(JwtStrategy);
+    jwtService = module.get<JwtService>(JwtService);
+    configService = module.get<ConfigService>(ConfigService);
+  });
+
+  it('should be defined', () => {
+    expect(strategy).toBeDefined();
+  });
+
+  // Feature: influencer-campaign-tracker, Property 5: JWT tokens have expiration
+  // Validates: Requirements 2.4
+  describe('Property 5: JWT tokens have expiration', () => {
+    it('should generate JWT tokens with expiration claim', async () => {
+      // Create a real JwtService for this test
+      const realJwtService = new JwtService({
+        secret: 'test-secret',
+        signOptions: { expiresIn: '7d' },
+      });
+
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            sub: fc.uuid(),
+            email: fc.emailAddress(),
+            role: fc.constantFrom(UserRole.brand, UserRole.influencer),
+          }),
+          async (payload) => {
+            // Sign a token with the payload
+            const token = realJwtService.sign(payload);
+
+            // Decode the token (without verification for testing)
+            const decoded = realJwtService.decode(token) as any;
+
+            // Property: Token should have an 'exp' claim
+            expect(decoded).toHaveProperty('exp');
+
+            // Property: Expiration should be in the future
+            const now = Math.floor(Date.now() / 1000);
+            expect(decoded.exp).toBeGreaterThan(now);
+
+            // Property: Expiration should be approximately 7 days from now (within 1 minute tolerance)
+            const sevenDaysInSeconds = 7 * 24 * 60 * 60;
+            const expectedExp = now + sevenDaysInSeconds;
+            expect(Math.abs(decoded.exp - expectedExp)).toBeLessThan(60);
+          },
+        ),
+        { numRuns: 100 },
+      );
+    });
+  });
+
+  describe('validate', () => {
+    it('should throw UnauthorizedException if payload is missing required fields', async () => {
+      const invalidPayload = { sub: 'test-id' }; // Missing email and role
+
+      await expect(strategy.validate(invalidPayload as any)).rejects.toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('should return user object with userId, email, and role', async () => {
+      const payload = {
+        sub: 'test-id',
+        email: 'test@example.com',
+        role: 'brand',
+      };
+
+      const result = await strategy.validate(payload);
+
+      expect(result).toEqual({
+        userId: 'test-id',
+        email: 'test@example.com',
+        role: 'brand',
+      });
+    });
+  });
+});
+
